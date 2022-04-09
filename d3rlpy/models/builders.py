@@ -14,6 +14,7 @@ from .torch import (
     DiscreteImitator,
     EnsembleContinuousQFunction,
     EnsembleDiscreteQFunction,
+    NonSquashedNormalPolicy,
     Parameter,
     ProbabilisticDynamicsModel,
     ProbabilisticEnsembleDynamicsModel,
@@ -41,9 +42,7 @@ def create_discrete_q_function(
         if not q_func_factory.share_encoder:
             encoder = encoder_factory.create(observation_shape)
         q_funcs.append(q_func_factory.create_discrete(encoder, action_size))
-    return EnsembleDiscreteQFunction(
-        q_funcs, bootstrap=q_func_factory.bootstrap
-    )
+    return EnsembleDiscreteQFunction(q_funcs)
 
 
 def create_continuous_q_function(
@@ -68,9 +67,7 @@ def create_continuous_q_function(
                 observation_shape, action_size
             )
         q_funcs.append(q_func_factory.create_continuous(encoder))
-    return EnsembleContinuousQFunction(
-        q_funcs, bootstrap=q_func_factory.bootstrap
-    )
+    return EnsembleContinuousQFunction(q_funcs)
 
 
 def create_deterministic_policy(
@@ -102,6 +99,24 @@ def create_squashed_normal_policy(
 ) -> SquashedNormalPolicy:
     encoder = encoder_factory.create(observation_shape)
     return SquashedNormalPolicy(
+        encoder,
+        action_size,
+        min_logstd=min_logstd,
+        max_logstd=max_logstd,
+        use_std_parameter=use_std_parameter,
+    )
+
+
+def create_non_squashed_normal_policy(
+    observation_shape: Sequence[int],
+    action_size: int,
+    encoder_factory: EncoderFactory,
+    min_logstd: float = -20.0,
+    max_logstd: float = 2.0,
+    use_std_parameter: bool = False,
+) -> NonSquashedNormalPolicy:
+    encoder = encoder_factory.create(observation_shape)
+    return NonSquashedNormalPolicy(
         encoder,
         action_size,
         min_logstd=min_logstd,
@@ -166,9 +181,13 @@ def create_probablistic_regressor(
     observation_shape: Sequence[int],
     action_size: int,
     encoder_factory: EncoderFactory,
+    min_logstd: float = -20.0,
+    max_logstd: float = 2.0,
 ) -> ProbablisticRegressor:
     encoder = encoder_factory.create(observation_shape)
-    return ProbablisticRegressor(encoder, action_size)
+    return ProbablisticRegressor(
+        encoder, action_size, min_logstd=min_logstd, max_logstd=max_logstd
+    )
 
 
 def create_value_function(

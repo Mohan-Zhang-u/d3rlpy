@@ -57,7 +57,6 @@ class SACImpl(DDPGBaseImpl):
         gamma: float,
         tau: float,
         n_critics: int,
-        target_reduction_type: str,
         initial_temperature: float,
         use_gpu: Optional[Device],
         scaler: Optional[Scaler],
@@ -77,7 +76,6 @@ class SACImpl(DDPGBaseImpl):
             gamma=gamma,
             tau=tau,
             n_critics=n_critics,
-            target_reduction_type=target_reduction_type,
             use_gpu=use_gpu,
             scaler=scaler,
             action_scaler=action_scaler,
@@ -159,12 +157,9 @@ class SACImpl(DDPGBaseImpl):
             target = self._targ_q_func.compute_target(
                 batch.next_observations,
                 action,
-                reduction=self._target_reduction_type,
+                reduction="min",
             )
-            if self._target_reduction_type == "none":
-                return target - entropy.view(1, -1, 1)
-            else:
-                return target - entropy
+            return target - entropy
 
 
 class DiscreteSACImpl(DiscreteQFunctionMixin, TorchImplBase):
@@ -334,13 +329,12 @@ class DiscreteSACImpl(DiscreteQFunctionMixin, TorchImplBase):
     ) -> torch.Tensor:
         assert self._q_func is not None
         return self._q_func.compute_error(
-            obs_t=batch.observations,
-            act_t=batch.actions.long(),
-            rew_tp1=batch.next_rewards,
-            q_tp1=q_tpn,
-            ter_tp1=batch.terminals,
-            gamma=self._gamma ** batch.n_steps,
-            masks=batch.masks,
+            observations=batch.observations,
+            actions=batch.actions.long(),
+            rewards=batch.rewards,
+            target=q_tpn,
+            terminals=batch.terminals,
+            gamma=self._gamma**batch.n_steps,
         )
 
     @train_api
@@ -417,6 +411,16 @@ class DiscreteSACImpl(DiscreteQFunctionMixin, TorchImplBase):
         return self._policy
 
     @property
+    def policy_optim(self) -> Optimizer:
+        assert self._actor_optim
+        return self._actor_optim
+
+    @property
     def q_function(self) -> EnsembleQFunction:
         assert self._q_func
         return self._q_func
+
+    @property
+    def q_function_optim(self) -> Optimizer:
+        assert self._critic_optim
+        return self._critic_optim

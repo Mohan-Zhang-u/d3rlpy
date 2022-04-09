@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -7,14 +7,23 @@ from torch.optim import Optimizer
 
 from ...gpu import Device
 from ...models.builders import (
+    create_deterministic_policy,
     create_deterministic_regressor,
     create_discrete_imitator,
+    create_probablistic_regressor,
+    create_squashed_normal_policy,
 )
 from ...models.encoders import EncoderFactory
 from ...models.optimizers import OptimizerFactory
-from ...models.torch import DeterministicRegressor, DiscreteImitator, Imitator
+from ...models.torch import (
+    DeterministicRegressor,
+    DiscreteImitator,
+    Imitator,
+    Policy,
+    ProbablisticRegressor,
+)
 from ...preprocessing import ActionScaler, Scaler
-from ...torch_utility import torch_api, train_api
+from ...torch_utility import hard_sync, torch_api, train_api
 from .base import TorchImplBase
 
 
@@ -108,12 +117,82 @@ class BCBaseImpl(TorchImplBase, metaclass=ABCMeta):
 
 class BCImpl(BCBaseImpl):
 
-    _imitator: Optional[DeterministicRegressor]
+    _policy_type: str
+    _imitator: Optional[Union[DeterministicRegressor, ProbablisticRegressor]]
+
+    def __init__(
+        self,
+        observation_shape: Sequence[int],
+        action_size: int,
+        learning_rate: float,
+        optim_factory: OptimizerFactory,
+        encoder_factory: EncoderFactory,
+        policy_type: str,
+        use_gpu: Optional[Device],
+        scaler: Optional[Scaler],
+        action_scaler: Optional[ActionScaler],
+    ):
+        super().__init__(
+            observation_shape=observation_shape,
+            action_size=action_size,
+            learning_rate=learning_rate,
+            optim_factory=optim_factory,
+            encoder_factory=encoder_factory,
+            use_gpu=use_gpu,
+            scaler=scaler,
+            action_scaler=action_scaler,
+        )
+        self._policy_type = policy_type
 
     def _build_network(self) -> None:
-        self._imitator = create_deterministic_regressor(
-            self._observation_shape, self._action_size, self._encoder_factory
-        )
+        if self._policy_type == "deterministic":
+            self._imitator = create_deterministic_regressor(
+                self._observation_shape,
+                self._action_size,
+                self._encoder_factory,
+            )
+        elif self._policy_type == "stochastic":
+            self._imitator = create_probablistic_regressor(
+                self._observation_shape,
+                self._action_size,
+                self._encoder_factory,
+                min_logstd=-4.0,
+                max_logstd=15.0,
+            )
+        else:
+            raise ValueError("invalid policy_type: {self._policy_type}")
+
+    @property
+    def policy(self) -> Policy:
+        assert self._imitator
+
+        policy: Policy
+        if self._policy_type == "deterministic":
+            policy = create_deterministic_policy(
+                self._observation_shape,
+                self._action_size,
+                self._encoder_factory,
+            )
+        elif self._policy_type == "stochastic":
+            policy = create_squashed_normal_policy(
+                self._observation_shape,
+                self._action_size,
+                self._encoder_factory,
+                min_logstd=-20.0,
+                max_logstd=2.0,
+            )
+        else:
+            raise ValueError(f"invalid policy_type: {self._policy_type}")
+
+        # copy parameters
+        hard_sync(policy, self._imitator)
+
+        return policy
+
+    @property
+    def policy_optim(self) -> Optimizer:
+        assert self._optim
+        return self._optim
 
 
 class DiscreteBCImpl(BCBaseImpl):

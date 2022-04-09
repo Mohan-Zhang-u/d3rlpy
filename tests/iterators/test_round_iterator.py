@@ -38,8 +38,12 @@ def test_round_iterator(
         )
         episodes.append(episode)
 
+    orig_transitions = []
+    for episode in episodes:
+        orig_transitions += episode.transitions
+
     iterator = RoundIterator(
-        episodes,
+        orig_transitions,
         batch_size,
         shuffle=shuffle,
         real_ratio=real_ratio,
@@ -66,8 +70,6 @@ def test_round_iterator(
             np.random.random(action_size),
             np.random.random(),
             np.random.random(observation_size),
-            np.random.random(action_size),
-            np.random.random(),
             terminal=True,
         )
         transitions.append(transition)

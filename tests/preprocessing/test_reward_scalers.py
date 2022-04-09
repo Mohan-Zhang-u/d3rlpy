@@ -3,11 +3,12 @@ import numpy as np
 import pytest
 import torch
 
-from d3rlpy.dataset import Episode, MDPDataset
+from d3rlpy.dataset import MDPDataset
 from d3rlpy.preprocessing import (
     ClipRewardScaler,
     MinMaxRewardScaler,
     MultiplyRewardScaler,
+    ReturnBasedRewardScaler,
     StandardRewardScaler,
     create_reward_scaler,
 )
@@ -126,7 +127,7 @@ def test_min_max_reward_scaler_with_episode(
     observations = np.random.random(shape)
     actions = np.random.random((batch_size, action_size))
     rewards = np.random.random(batch_size)
-    terminals = np.random.randint(2, size=batch_size)
+    terminals = np.zeros(batch_size)
     terminals[-1] = 1.0
 
     dataset = MDPDataset(
@@ -145,7 +146,10 @@ def test_min_max_reward_scaler_with_episode(
     minimum = rewards_without_first.min()
 
     scaler = MinMaxRewardScaler()
-    scaler.fit(dataset.episodes)
+    transitions = []
+    for episode in dataset.episodes:
+        transitions += episode.transitions
+    scaler.fit(transitions)
 
     x = torch.rand(batch_size)
     y = scaler.transform(x)
@@ -202,7 +206,7 @@ def test_standard_reward_scaler_with_episode(
     observations = np.random.random(shape)
     actions = np.random.random((batch_size, action_size))
     rewards = np.random.random(batch_size).astype("f4")
-    terminals = np.random.randint(2, size=batch_size)
+    terminals = np.zeros(batch_size)
     terminals[-1] = 1.0
 
     dataset = MDPDataset(
@@ -214,14 +218,17 @@ def test_standard_reward_scaler_with_episode(
 
     rewards_without_first = []
     for episode in dataset:
-        rewards_without_first += episode.rewards[1:].tolist()
+        rewards_without_first += episode.rewards.tolist()
     rewards_without_first = np.array(rewards_without_first)
 
     mean = np.mean(rewards_without_first)
     std = np.std(rewards_without_first)
 
     scaler = StandardRewardScaler(eps=eps)
-    scaler.fit(dataset.episodes)
+    transitions = []
+    for episode in dataset.episodes:
+        transitions += episode.transitions
+    scaler.fit(transitions)
 
     x = torch.rand(batch_size)
     y = scaler.transform(x)
@@ -231,3 +238,44 @@ def test_standard_reward_scaler_with_episode(
     params = scaler.get_params()
     assert np.allclose(params["mean"], mean)
     assert np.allclose(params["std"], std)
+
+
+@pytest.mark.parametrize("observation_shape", [(100,)])
+@pytest.mark.parametrize("action_size", [10])
+@pytest.mark.parametrize("batch_size", [32])
+def test_return_based_reward_scaler_with_episode(
+    observation_shape, action_size, batch_size
+):
+    shape = (batch_size,) + observation_shape
+    observations = np.random.random(shape)
+    actions = np.random.random((batch_size, action_size))
+    rewards = np.random.random(batch_size).astype("f4")
+    terminals = np.zeros(batch_size)
+    terminals[batch_size // 2] = 1.0
+    terminals[-1] = 1.0
+
+    dataset = MDPDataset(
+        observations=observations,
+        actions=actions,
+        rewards=rewards,
+        terminals=terminals,
+    )
+
+    returns = []
+    for episode in dataset.episodes:
+        returns.append(episode.compute_return())
+
+    scaler = ReturnBasedRewardScaler()
+    transitions = []
+    for episode in dataset.episodes:
+        transitions += episode.transitions
+    scaler.fit(transitions)
+
+    x = torch.rand(batch_size)
+    y = scaler.transform(x)
+    ref_y = x.numpy() / (max(returns) - min(returns))
+    assert np.allclose(y, ref_y, atol=1e-6)
+
+    params = scaler.get_params()
+    assert np.allclose(params["return_max"], max(returns))
+    assert np.allclose(params["return_min"], min(returns))

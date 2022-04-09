@@ -109,11 +109,10 @@ class ProbabilisticEnsembleDynamicsImpl(TorchImplBase):
         assert self._optim is not None
 
         loss = self._dynamics.compute_error(
-            obs_t=batch.observations,
-            act_t=batch.actions,
-            rew_tp1=batch.next_rewards,
-            obs_tp1=batch.next_observations,
-            masks=batch.masks,
+            observations=batch.observations,
+            actions=batch.actions,
+            rewards=batch.rewards,
+            next_observations=batch.next_observations,
         )
 
         self._optim.zero_grad()

@@ -11,23 +11,9 @@ from ..constants import (
     IMPL_NOT_INITIALIZED_ERROR,
     ActionSpace,
 )
-from ..envs import BatchEnv
-from ..models.torch.policies import Policy
-from ..models.torch.q_functions.ensemble_q_function import EnsembleQFunction
-from ..online.buffers import (
-    BatchBuffer,
-    BatchReplayBuffer,
-    Buffer,
-    ReplayBuffer,
-)
+from ..online.buffers import Buffer, ReplayBuffer
 from ..online.explorers import Explorer
-from ..online.iterators import (
-    AlgoProtocol,
-    collect,
-    train_batch_env,
-    train_single_env,
-)
-from ..torch_utility import hard_sync
+from ..online.iterators import AlgoProtocol, collect, train_single_env
 
 
 def _assert_action_space(algo: LearnableBase, env: gym.Env) -> None:
@@ -68,30 +54,20 @@ class AlgoImplBase(ImplBase):
     def sample_action(self, x: Union[np.ndarray, List[Any]]) -> np.ndarray:
         pass
 
-    @property
-    def policy(self) -> Policy:
+    def copy_policy_from(self, impl: "AlgoImplBase") -> None:
         raise NotImplementedError
 
-    def copy_policy_from(self, impl: "AlgoImplBase") -> None:
-        if not isinstance(impl.policy, type(self.policy)):
-            raise ValueError(
-                f"Invalid policy type: expected={type(self.policy)},"
-                f"actual={type(impl.policy)}"
-            )
-        hard_sync(self.policy, impl.policy)
-
-    @property
-    def q_function(self) -> EnsembleQFunction:
+    def copy_policy_optim_from(self, impl: "AlgoImplBase") -> None:
         raise NotImplementedError
 
     def copy_q_function_from(self, impl: "AlgoImplBase") -> None:
-        q_func = self.q_function.q_funcs[0]
-        if not isinstance(impl.q_function.q_funcs[0], type(q_func)):
-            raise ValueError(
-                f"Invalid Q-function type: expected={type(q_func)},"
-                f"actual={type(impl.q_function.q_funcs[0])}"
-            )
-        hard_sync(self.q_function, impl.q_function)
+        raise NotImplementedError
+
+    def copy_q_function_optim_from(self, impl: "AlgoImplBase") -> None:
+        raise NotImplementedError
+
+    def reset_optimizer_states(self) -> None:
+        raise NotImplementedError
 
 
 class AlgoBase(LearnableBase):
@@ -296,92 +272,6 @@ class AlgoBase(LearnableBase):
             callback=callback,
         )
 
-    def fit_batch_online(
-        self,
-        env: BatchEnv,
-        buffer: Optional[BatchBuffer] = None,
-        explorer: Optional[Explorer] = None,
-        n_epochs: int = 1000,
-        n_steps_per_epoch: int = 1000,
-        n_updates_per_epoch: int = 1000,
-        eval_interval: int = 10,
-        eval_env: Optional[gym.Env] = None,
-        eval_epsilon: float = 0.0,
-        save_metrics: bool = True,
-        save_interval: int = 1,
-        experiment_name: Optional[str] = None,
-        with_timestamp: bool = True,
-        logdir: str = "d3rlpy_logs",
-        verbose: bool = True,
-        show_progress: bool = True,
-        tensorboard_dir: Optional[str] = None,
-        timelimit_aware: bool = True,
-        callback: Optional[Callable[[AlgoProtocol, int, int], None]] = None,
-    ) -> None:
-        """Start training loop of batch online deep reinforcement learning.
-
-        Args:
-            env: gym-like environment.
-            buffer : replay buffer.
-            explorer: action explorer.
-            n_epochs: the number of epochs to train.
-            n_steps_per_epoch: the number of steps per epoch.
-            update_interval: the number of steps per update.
-            n_updates_per_epoch: the number of updates per epoch.
-            eval_interval: the number of epochs before evaluation.
-            eval_env: gym-like environment. If None, evaluation is skipped.
-            eval_epsilon: :math:`\\epsilon`-greedy factor during evaluation.
-            save_metrics: flag to record metrics. If False, the log
-                directory is not created and the model parameters are not saved.
-            save_interval: the number of epochs before saving models.
-            experiment_name: experiment name for logging. If not passed,
-                the directory name will be ``{class name}_online_{timestamp}``.
-            with_timestamp: flag to add timestamp string to the last of
-                directory name.
-            logdir: root directory name to save logs.
-            verbose: flag to show logged information on stdout.
-            show_progress: flag to show progress bar for iterations.
-            tensorboard_dir: directory to save logged information in
-                tensorboard (additional to the csv data).  if ``None``, the
-                directory will not be created.
-            timelimit_aware: flag to turn ``terminal`` flag ``False`` when
-                ``TimeLimit.truncated`` flag is ``True``, which is designed to
-                incorporate with ``gym.wrappers.TimeLimit``.
-            callback: callable function that takes ``(algo, epoch, total_step)``
-                , which is called at the end of epochs.
-
-        """
-
-        # create default replay buffer
-        if buffer is None:
-            buffer = BatchReplayBuffer(1000000, env=env)
-
-        # check action-space
-        _assert_action_space(self, env)
-
-        train_batch_env(
-            algo=self,
-            env=env,
-            buffer=buffer,
-            explorer=explorer,
-            n_epochs=n_epochs,
-            n_steps_per_epoch=n_steps_per_epoch,
-            n_updates_per_epoch=n_updates_per_epoch,
-            eval_interval=eval_interval,
-            eval_env=eval_env,
-            eval_epsilon=eval_epsilon,
-            save_metrics=save_metrics,
-            save_interval=save_interval,
-            experiment_name=experiment_name,
-            with_timestamp=with_timestamp,
-            logdir=logdir,
-            verbose=verbose,
-            show_progress=show_progress,
-            tensorboard_dir=tensorboard_dir,
-            timelimit_aware=timelimit_aware,
-            callback=callback,
-        )
-
     def collect(
         self,
         env: gym.Env,
@@ -440,7 +330,7 @@ class AlgoBase(LearnableBase):
             cql = d3rlpy.algos.CQL()
             cql.fit(dataset, n_steps=100000)
 
-            # transfer to online algorithmn
+            # transfer to online algorithm
             sac = d3rlpy.algos.SAC()
             sac.create_impl(cql.observation_shape, cql.action_size)
             sac.copy_policy_from(cql)
@@ -452,6 +342,28 @@ class AlgoBase(LearnableBase):
         assert self._impl, IMPL_NOT_INITIALIZED_ERROR
         assert isinstance(algo.impl, AlgoImplBase)
         self._impl.copy_policy_from(algo.impl)
+
+    def copy_policy_optim_from(self, algo: "AlgoBase") -> None:
+        """Copies policy optimizer states from the given algorithm.
+
+        .. code-block:: python
+
+            # pretrain with static dataset
+            cql = d3rlpy.algos.CQL()
+            cql.fit(dataset, n_steps=100000)
+
+            # transfer to online algorithm
+            sac = d3rlpy.algos.SAC()
+            sac.create_impl(cql.observation_shape, cql.action_size)
+            sac.copy_policy_optim_from(cql)
+
+        Args:
+            algo: algorithm object.
+
+        """
+        assert self._impl, IMPL_NOT_INITIALIZED_ERROR
+        assert isinstance(algo.impl, AlgoImplBase)
+        self._impl.copy_policy_optim_from(algo.impl)
 
     def copy_q_function_from(self, algo: "AlgoBase") -> None:
         """Copies Q-function parameters from the given algorithm.
@@ -474,3 +386,35 @@ class AlgoBase(LearnableBase):
         assert self._impl, IMPL_NOT_INITIALIZED_ERROR
         assert isinstance(algo.impl, AlgoImplBase)
         self._impl.copy_q_function_from(algo.impl)
+
+    def copy_q_function_optim_from(self, algo: "AlgoBase") -> None:
+        """Copies Q-function optimizer states from the given algorithm.
+
+        .. code-block:: python
+
+            # pretrain with static dataset
+            cql = d3rlpy.algos.CQL()
+            cql.fit(dataset, n_steps=100000)
+
+            # transfer to online algorithm
+            sac = d3rlpy.algos.SAC()
+            sac.create_impl(cql.observation_shape, cql.action_size)
+            sac.copy_policy_optim_from(cql)
+
+        Args:
+            algo: algorithm object.
+
+        """
+        assert self._impl, IMPL_NOT_INITIALIZED_ERROR
+        assert isinstance(algo.impl, AlgoImplBase)
+        self._impl.copy_q_function_optim_from(algo.impl)
+
+    def reset_optimizer_states(self) -> None:
+        """Resets optimizer states.
+
+        This is especially useful when fine-tuning policies with setting inital
+        optimizer states.
+
+        """
+        assert self._impl, IMPL_NOT_INITIALIZED_ERROR
+        self._impl.reset_optimizer_states()

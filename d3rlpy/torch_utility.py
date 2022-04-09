@@ -1,16 +1,23 @@
+import collections
 from inspect import signature
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
 from torch import nn
+from torch.optim import Optimizer
 from torch.utils.data._utils.collate import default_collate
 from typing_extensions import Protocol
 
 from .dataset import TransitionMiniBatch
 from .preprocessing import ActionScaler, RewardScaler, Scaler
 
-BLACK_LIST = ["policy", "q_function"]  # special properties
+BLACK_LIST = [
+    "policy",
+    "q_function",
+    "policy_optim",
+    "q_function_optim",
+]  # special properties
 
 
 def _get_attributes(obj: Any) -> List[str]:
@@ -32,6 +39,15 @@ def hard_sync(targ_model: nn.Module, model: nn.Module) -> None:
         targ_params = targ_model.parameters()
         for p, p_targ in zip(params, targ_params):
             p_targ.data.copy_(p.data)
+
+
+def sync_optimizer_state(targ_optim: Optimizer, optim: Optimizer) -> None:
+    # source optimizer state
+    state = optim.state_dict()["state"]
+    # destination optimizer param_groups
+    param_groups = targ_optim.state_dict()["param_groups"]
+    # update only state
+    targ_optim.load_state_dict({"state": state, "param_groups": param_groups})
 
 
 def set_eval_mode(impl: Any) -> None:
@@ -94,12 +110,19 @@ def set_state_dict(impl: Any, chkpt: Dict[str, Any]) -> None:
             obj.load_state_dict(chkpt[key])
 
 
+def reset_optimizer_states(impl: Any) -> None:
+    for key in _get_attributes(impl):
+        obj = getattr(impl, key)
+        if isinstance(obj, torch.optim.Optimizer):
+            obj.state = collections.defaultdict(dict)
+
+
 def map_location(device: str) -> Any:
     if "cuda" in device:
         return lambda storage, loc: storage.cuda(device)
     if "cpu" in device:
         return "cpu"
-    raise ValueError("invalid device={}".format(device))
+    raise ValueError(f"invalid device={device}")
 
 
 class _WithDeviceAndScalerProtocol(Protocol):
@@ -132,10 +155,7 @@ class TorchMiniBatch:
     _actions: torch.Tensor
     _rewards: torch.Tensor
     _next_observations: torch.Tensor
-    _next_actions: torch.Tensor
-    _next_rewards: torch.Tensor
     _terminals: torch.Tensor
-    _masks: Optional[torch.Tensor]
     _n_steps: torch.Tensor
     _device: str
 
@@ -152,14 +172,7 @@ class TorchMiniBatch:
         actions = _convert_to_torch(batch.actions, device)
         rewards = _convert_to_torch(batch.rewards, device)
         next_observations = _convert_to_torch(batch.next_observations, device)
-        next_actions = _convert_to_torch(batch.next_actions, device)
-        next_rewards = _convert_to_torch(batch.next_rewards, device)
         terminals = _convert_to_torch(batch.terminals, device)
-        masks: Optional[torch.Tensor]
-        if batch.masks is None:
-            masks = None
-        else:
-            masks = _convert_to_torch(batch.masks, device)
         n_steps = _convert_to_torch(batch.n_steps, device)
 
         # apply scaler
@@ -168,19 +181,14 @@ class TorchMiniBatch:
             next_observations = scaler.transform(next_observations)
         if action_scaler:
             actions = action_scaler.transform(actions)
-            next_actions = action_scaler.transform(next_actions)
         if reward_scaler:
             rewards = reward_scaler.transform(rewards)
-            next_rewards = reward_scaler.transform(next_rewards)
 
         self._observations = observations
         self._actions = actions
         self._rewards = rewards
         self._next_observations = next_observations
-        self._next_actions = next_actions
-        self._next_rewards = next_rewards
         self._terminals = terminals
-        self._masks = masks
         self._n_steps = n_steps
         self._device = device
 
@@ -201,20 +209,8 @@ class TorchMiniBatch:
         return self._next_observations
 
     @property
-    def next_actions(self) -> torch.Tensor:
-        return self._next_actions
-
-    @property
-    def next_rewards(self) -> torch.Tensor:
-        return self._next_rewards
-
-    @property
     def terminals(self) -> torch.Tensor:
         return self._terminals
-
-    @property
-    def masks(self) -> Optional[torch.Tensor]:
-        return self._masks
 
     @property
     def n_steps(self) -> torch.Tensor:

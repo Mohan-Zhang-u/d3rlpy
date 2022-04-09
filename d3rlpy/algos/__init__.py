@@ -1,7 +1,6 @@
 from typing import Any, Dict, Type
 
 from .awac import AWAC
-from .awr import AWR, DiscreteAWR
 from .base import AlgoBase
 from .bc import BC, DiscreteBC
 from .bcq import BCQ, DiscreteBCQ
@@ -11,6 +10,7 @@ from .cql import CQL, DiscreteCQL
 from .crr import CRR
 from .ddpg import DDPG
 from .dqn import DQN, DoubleDQN
+from .iql import IQL
 from .mopo import MOPO
 from .plas import PLAS, PLASWithPerturbation
 from .random_policy import DiscreteRandomPolicy, RandomPolicy
@@ -21,8 +21,6 @@ from .td3_plus_bc import TD3PlusBC
 __all__ = [
     "AlgoBase",
     "AWAC",
-    "AWR",
-    "DiscreteAWR",
     "BC",
     "DiscreteBC",
     "BCQ",
@@ -35,6 +33,7 @@ __all__ = [
     "DDPG",
     "DQN",
     "DoubleDQN",
+    "IQL",
     "MOPO",
     "PLAS",
     "PLASWithPerturbation",
@@ -50,7 +49,6 @@ __all__ = [
 
 
 DISCRETE_ALGORITHMS: Dict[str, Type[AlgoBase]] = {
-    "awr": DiscreteAWR,
     "bc": DiscreteBC,
     "bcq": DiscreteBCQ,
     "cql": DiscreteCQL,
@@ -62,7 +60,6 @@ DISCRETE_ALGORITHMS: Dict[str, Type[AlgoBase]] = {
 
 CONTINUOUS_ALGORITHMS: Dict[str, Type[AlgoBase]] = {
     "awac": AWAC,
-    "awr": AWR,
     "bc": BC,
     "bcq": BCQ,
     "bear": BEAR,
@@ -70,6 +67,7 @@ CONTINUOUS_ALGORITHMS: Dict[str, Type[AlgoBase]] = {
     "cql": CQL,
     "crr": CRR,
     "ddpg": DDPG,
+    "iql": IQL,
     "mopo": MOPO,
     "plas": PLASWithPerturbation,
     "sac": SAC,
@@ -93,10 +91,10 @@ def get_algo(name: str, discrete: bool) -> Type[AlgoBase]:
     if discrete:
         if name in DISCRETE_ALGORITHMS:
             return DISCRETE_ALGORITHMS[name]
-        raise ValueError("%s does not support discrete action-space." % name)
+        raise ValueError(f"{name} does not support discrete action-space.")
     if name in CONTINUOUS_ALGORITHMS:
         return CONTINUOUS_ALGORITHMS[name]
-    raise ValueError("%s does not support continuous action-space." % name)
+    raise ValueError(f"{name} does not support continuous action-space.")
 
 
 def create_algo(name: str, discrete: bool, **params: Any) -> AlgoBase:

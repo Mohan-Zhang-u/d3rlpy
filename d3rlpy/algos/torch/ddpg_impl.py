@@ -38,7 +38,6 @@ class DDPGBaseImpl(ContinuousQFunctionMixin, TorchImplBase, metaclass=ABCMeta):
     _gamma: float
     _tau: float
     _n_critics: int
-    _target_reduction_type: str
     _use_gpu: Optional[Device]
     _q_func: Optional[EnsembleContinuousQFunction]
     _policy: Optional[Policy]
@@ -61,7 +60,6 @@ class DDPGBaseImpl(ContinuousQFunctionMixin, TorchImplBase, metaclass=ABCMeta):
         gamma: float,
         tau: float,
         n_critics: int,
-        target_reduction_type: str,
         use_gpu: Optional[Device],
         scaler: Optional[Scaler],
         action_scaler: Optional[ActionScaler],
@@ -84,7 +82,6 @@ class DDPGBaseImpl(ContinuousQFunctionMixin, TorchImplBase, metaclass=ABCMeta):
         self._gamma = gamma
         self._tau = tau
         self._n_critics = n_critics
-        self._target_reduction_type = target_reduction_type
         self._use_gpu = use_gpu
 
         # initialized in build
@@ -159,14 +156,12 @@ class DDPGBaseImpl(ContinuousQFunctionMixin, TorchImplBase, metaclass=ABCMeta):
     ) -> torch.Tensor:
         assert self._q_func is not None
         return self._q_func.compute_error(
-            obs_t=batch.observations,
-            act_t=batch.actions,
-            rew_tp1=batch.next_rewards,
-            q_tp1=q_tpn,
-            ter_tp1=batch.terminals,
-            gamma=self._gamma ** batch.n_steps,
-            use_independent_target=self._target_reduction_type == "none",
-            masks=batch.masks,
+            observations=batch.observations,
+            actions=batch.actions,
+            rewards=batch.rewards,
+            target=q_tpn,
+            terminals=batch.terminals,
+            gamma=self._gamma**batch.n_steps,
         )
 
     @train_api
@@ -219,9 +214,19 @@ class DDPGBaseImpl(ContinuousQFunctionMixin, TorchImplBase, metaclass=ABCMeta):
         return self._policy
 
     @property
+    def policy_optim(self) -> Optimizer:
+        assert self._actor_optim
+        return self._actor_optim
+
+    @property
     def q_function(self) -> EnsembleQFunction:
         assert self._q_func
         return self._q_func
+
+    @property
+    def q_function_optim(self) -> Optimizer:
+        assert self._critic_optim
+        return self._critic_optim
 
 
 class DDPGImpl(DDPGBaseImpl):
@@ -251,7 +256,7 @@ class DDPGImpl(DDPGBaseImpl):
             return self._targ_q_func.compute_target(
                 batch.next_observations,
                 action.clamp(-1.0, 1.0),
-                reduction=self._target_reduction_type,
+                reduction="min",
             )
 
     def _sample_action(self, x: torch.Tensor) -> torch.Tensor:

@@ -15,10 +15,12 @@ from d3rlpy.torch_utility import (
     get_state_dict,
     hard_sync,
     map_location,
+    reset_optimizer_states,
     set_eval_mode,
     set_state_dict,
     set_train_mode,
     soft_sync,
+    sync_optimizer_state,
     torch_api,
     train_api,
     unfreeze,
@@ -52,6 +54,38 @@ def test_hard_sync(input_size, output_size):
 
     for p, targ_p in zip(module.parameters(), targ_module.parameters()):
         assert torch.allclose(targ_p, p)
+
+
+@pytest.mark.parametrize("input_size", [32])
+@pytest.mark.parametrize("output_size", [1])
+def test_sync_optimizer_state(input_size, output_size):
+    module = torch.nn.Linear(input_size, output_size)
+
+    # lr=1e-3
+    optim = torch.optim.Adam(module.parameters(), lr=1e-3)
+
+    # instantiate state values
+    y = module(torch.rand(input_size))
+    y.backward()
+    optim.step()
+
+    # lr=1e-4
+    targ_optim = torch.optim.Adam(module.parameters(), lr=1e-4)
+
+    sync_optimizer_state(targ_optim, optim)
+
+    # check if lr is not synced
+    assert targ_optim.param_groups[0]["lr"] != optim.param_groups[0]["lr"]
+
+    # check if state is synced
+    targ_state = targ_optim.state_dict()["state"]
+    state = optim.state_dict()["state"]
+    for i, l in targ_state.items():
+        for k, v in l.items():
+            if isinstance(v, int):
+                assert v == state[i][k]
+            else:
+                assert torch.allclose(v, state[i][k])
 
 
 def test_map_location_with_cpu():
@@ -165,6 +199,25 @@ def test_set_state_dict():
     assert (impl1._fc2.bias == impl2._fc2.bias).all()
 
 
+def test_reset_optimizer_states():
+    impl = DummyImpl()
+
+    # instantiate optimizer state
+    y = impl._fc1(torch.rand(100)).sum()
+    y.backward()
+    impl._optim.step()
+
+    # check if state is not empty
+    state = copy.deepcopy(impl._optim.state)
+    assert state
+
+    reset_optimizer_states(impl)
+
+    # check if state is empty
+    reset_state = impl._optim.state
+    assert not reset_state
+
+
 def test_eval_mode():
     impl = DummyImpl()
     impl._fc1.train()
@@ -244,8 +297,6 @@ def test_torch_mini_batch(
             action=np.random.random(action_size),
             reward=np.random.random(),
             next_observation=np.random.random(obs_shape),
-            next_action=np.random.random(action_size),
-            next_reward=np.random.random(),
             terminal=0.0,
         )
         transitions.append(transition)
@@ -306,21 +357,13 @@ def test_torch_mini_batch(
 
     if use_action_scaler:
         assert np.all(torch_batch.actions.numpy() == batch.actions + 0.2)
-        assert np.all(
-            torch_batch.next_actions.numpy() == batch.next_actions + 0.2
-        )
     else:
         assert np.all(torch_batch.actions.numpy() == batch.actions)
-        assert np.all(torch_batch.next_actions.numpy() == batch.next_actions)
 
     if use_reward_scaler:
         assert np.all(torch_batch.rewards.numpy() == batch.rewards + 0.2)
-        assert np.all(
-            torch_batch.next_rewards.numpy() == batch.next_rewards + 0.2
-        )
     else:
         assert np.all(torch_batch.rewards.numpy() == batch.rewards)
-        assert np.all(torch_batch.next_rewards.numpy() == batch.next_rewards)
 
     assert np.all(torch_batch.terminals.numpy() == batch.terminals)
     assert np.all(torch_batch.n_steps.numpy() == batch.n_steps)
@@ -388,8 +431,6 @@ def test_torch_api_with_batch(
             action=np.random.random(action_size),
             reward=np.random.random(),
             next_observation=np.random.random(obs_shape),
-            next_action=np.random.random(action_size),
-            next_reward=np.random.random(),
             terminal=0.0,
         )
         transitions.append(transition)
@@ -449,21 +490,13 @@ def test_torch_api_with_batch(
 
     if use_action_scaler:
         assert np.all(torch_batch.actions.numpy() == batch.actions + 0.2)
-        assert np.all(
-            torch_batch.next_actions.numpy() == batch.next_actions + 0.2
-        )
     else:
         assert np.all(torch_batch.actions.numpy() == batch.actions)
-        assert np.all(torch_batch.next_actions.numpy() == batch.next_actions)
 
     if use_reward_scaler:
         assert np.all(torch_batch.rewards.numpy() == batch.rewards + 0.2)
-        assert np.all(
-            torch_batch.next_rewards.numpy() == batch.next_rewards + 0.2
-        )
     else:
         assert np.all(torch_batch.rewards.numpy() == batch.rewards)
-        assert np.all(torch_batch.next_rewards.numpy() == batch.next_rewards)
 
     assert np.all(torch_batch.terminals.numpy() == batch.terminals)
     assert np.all(torch_batch.n_steps.numpy() == batch.n_steps)

@@ -1,16 +1,22 @@
-from typing import Optional, Sequence
+from typing import Optional, Sequence, cast
 
 import numpy as np
 import torch
+from torch.optim import Optimizer
 
 from ...gpu import Device
+from ...models.torch.policies import Policy
+from ...models.torch.q_functions.ensemble_q_function import EnsembleQFunction
 from ...preprocessing import ActionScaler, RewardScaler, Scaler
 from ...torch_utility import (
     eval_api,
     freeze,
     get_state_dict,
+    hard_sync,
     map_location,
+    reset_optimizer_states,
     set_state_dict,
+    sync_optimizer_state,
     to_cpu,
     to_cuda,
     torch_api,
@@ -108,7 +114,6 @@ class TorchImplBase(AlgoImplBase):
                 opset_version=11,
                 input_names=["input_0"],
                 output_names=["output_0"],
-                example_outputs=traced_script(dummy_x),
             )
         elif fname.endswith(".pt"):
             traced_script.save(fname)
@@ -122,7 +127,7 @@ class TorchImplBase(AlgoImplBase):
         unfreeze(self)
 
     def to_gpu(self, device: Device = Device()) -> None:
-        self._device = "cuda:%d" % device.get_id()
+        self._device = f"cuda:{device.get_id()}"
         to_cuda(self, self._device)
 
     def to_cpu(self) -> None:
@@ -135,6 +140,64 @@ class TorchImplBase(AlgoImplBase):
     def load_model(self, fname: str) -> None:
         chkpt = torch.load(fname, map_location=map_location(self._device))
         set_state_dict(self, chkpt)
+
+    @property
+    def policy(self) -> Policy:
+        raise NotImplementedError
+
+    def copy_policy_from(self, impl: AlgoImplBase) -> None:
+        impl = cast("TorchImplBase", impl)
+        if not isinstance(impl.policy, type(self.policy)):
+            raise ValueError(
+                f"Invalid policy type: expected={type(self.policy)},"
+                f"actual={type(impl.policy)}"
+            )
+        hard_sync(self.policy, impl.policy)
+
+    @property
+    def policy_optim(self) -> Optimizer:
+        raise NotImplementedError
+
+    def copy_policy_optim_from(self, impl: AlgoImplBase) -> None:
+        impl = cast("TorchImplBase", impl)
+        if not isinstance(impl.policy_optim, type(self.policy_optim)):
+            raise ValueError(
+                "Invalid policy optimizer type: "
+                f"expected={type(self.policy_optim)},"
+                f"actual={type(impl.policy_optim)}"
+            )
+        sync_optimizer_state(self.policy_optim, impl.policy_optim)
+
+    @property
+    def q_function(self) -> EnsembleQFunction:
+        raise NotImplementedError
+
+    def copy_q_function_from(self, impl: AlgoImplBase) -> None:
+        impl = cast("TorchImplBase", impl)
+        q_func = self.q_function.q_funcs[0]
+        if not isinstance(impl.q_function.q_funcs[0], type(q_func)):
+            raise ValueError(
+                f"Invalid Q-function type: expected={type(q_func)},"
+                f"actual={type(impl.q_function.q_funcs[0])}"
+            )
+        hard_sync(self.q_function, impl.q_function)
+
+    @property
+    def q_function_optim(self) -> Optimizer:
+        raise NotImplementedError
+
+    def copy_q_function_optim_from(self, impl: AlgoImplBase) -> None:
+        impl = cast("TorchImplBase", impl)
+        if not isinstance(impl.q_function_optim, type(self.q_function_optim)):
+            raise ValueError(
+                "Invalid Q-function optimizer type: "
+                f"expected={type(self.q_function_optim)}",
+                f"actual={type(impl.q_function_optim)}",
+            )
+        sync_optimizer_state(self.q_function_optim, impl.q_function_optim)
+
+    def reset_optimizer_states(self) -> None:
+        reset_optimizer_states(self)
 
     @property
     def observation_shape(self) -> Sequence[int]:

@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import torch
 
-from ..dataset import Episode, MDPDataset
+from ..dataset import MDPDataset, Transition
 from ..decorators import pretty_repr
 from ..logger import LOG
 
@@ -14,11 +14,11 @@ class RewardScaler:
 
     TYPE: ClassVar[str] = "none"
 
-    def fit(self, episodes: List[Episode]) -> None:
+    def fit(self, transitions: List[Transition]) -> None:
         """Estimates scaling parameters from dataset.
 
         Args:
-            episodes: list of episodes.
+            transitions: list of transitions.
 
         """
         raise NotImplementedError
@@ -118,7 +118,7 @@ class MultiplyRewardScaler(RewardScaler):
     def __init__(self, multiplier: Optional[float] = None):
         self._multiplier = multiplier
 
-    def fit(self, episodes: List[Episode]) -> None:
+    def fit(self, transitions: List[Transition]) -> None:
         if self._multiplier is None:
             LOG.warning("Please initialize MultiplyRewardScaler manually.")
 
@@ -169,7 +169,7 @@ class ClipRewardScaler(RewardScaler):
         self._high = high
         self._multiplier = multiplier
 
-    def fit(self, episodes: List[Episode]) -> None:
+    def fit(self, transitions: List[Transition]) -> None:
         if self._low is None and self._high is None:
             LOG.warning("Please initialize ClipRewardScaler manually.")
 
@@ -241,18 +241,19 @@ class MinMaxRewardScaler(RewardScaler):
         self._maximum = None
         self._multiplier = multiplier
         if dataset:
-            self.fit(dataset.episodes)
+            transitions = []
+            for episode in dataset.episodes:
+                transitions += episode.transitions
+            self.fit(transitions)
         elif minimum is not None and maximum is not None:
             self._minimum = minimum
             self._maximum = maximum
 
-    def fit(self, episodes: List[Episode]) -> None:
+    def fit(self, transitions: List[Transition]) -> None:
         if self._minimum is not None and self._maximum is not None:
             return
 
-        rewards = []
-        for episode in episodes:
-            rewards += episode.rewards[1:].tolist()
+        rewards = [transition.reward for transition in transitions]
 
         self._minimum = float(np.min(rewards))
         self._maximum = float(np.max(rewards))
@@ -335,18 +336,19 @@ class StandardRewardScaler(RewardScaler):
         self._eps = eps
         self._multiplier = multiplier
         if dataset:
-            self.fit(dataset.episodes)
+            transitions = []
+            for episode in dataset.episodes:
+                transitions += episode.transitions
+            self.fit(transitions)
         elif mean is not None and std is not None:
             self._mean = mean
             self._std = std
 
-    def fit(self, episodes: List[Episode]) -> None:
+    def fit(self, transitions: List[Transition]) -> None:
         if self._mean is not None and self._std is not None:
             return
 
-        rewards = []
-        for episode in episodes:
-            rewards += episode.rewards[1:].tolist()
+        rewards = [transition.reward for transition in transitions]
 
         self._mean = float(np.mean(rewards))
         self._std = float(np.std(rewards))
@@ -374,6 +376,117 @@ class StandardRewardScaler(RewardScaler):
         }
 
 
+class ReturnBasedRewardScaler(RewardScaler):
+    r"""Reward normalization preprocessing based on return scale.
+
+    .. math::
+
+        r' = r / (R_{max} - R_{min})
+
+    .. code-block:: python
+
+        from d3rlpy.algos import CQL
+
+        cql = CQL(reward_scaler="return")
+
+    You can also initialize with :class:`d3rlpy.dataset.MDPDataset` object or
+    manually.
+
+    .. code-block:: python
+
+        from d3rlpy.preprocessing import ReturnBasedRewardScaler
+
+        # initialize with dataset
+        scaler = ReturnBasedRewardScaler(dataset)
+
+        # initialize manually
+        scaler = ReturnBasedRewardScaler(return_max=100.0, return_min=1.0)
+
+        cql = CQL(scaler=scaler)
+
+    References:
+        * `Kostrikov et al., Offline Reinforcement Learning with Implicit
+          Q-Learning. <https://arxiv.org/abs/2110.06169>`_
+
+    Args:
+        dataset (d3rlpy.dataset.MDPDataset): dataset object.
+        return_max (float): the maximum return value.
+        return_min (float): standard deviation value.
+        multiplier (float): constant multiplication value
+
+    """
+    TYPE: ClassVar[str] = "return"
+    _return_max: Optional[float]
+    _return_min: Optional[float]
+    _multiplier: float
+
+    def __init__(
+        self,
+        dataset: Optional[MDPDataset] = None,
+        return_max: Optional[float] = None,
+        return_min: Optional[float] = None,
+        multiplier: float = 1.0,
+    ):
+        self._return_max = None
+        self._return_min = None
+        self._multiplier = multiplier
+        if dataset:
+            transitions = []
+            for episode in dataset.episodes:
+                transitions += episode.transitions
+            self.fit(transitions)
+        elif return_max is not None and return_min is not None:
+            self._return_max = return_max
+            self._return_min = return_min
+
+    def fit(self, transitions: List[Transition]) -> None:
+        if self._return_max is not None and self._return_min is not None:
+            return
+
+        # collect start states
+        start_transitions = set()
+        for transition in transitions:
+            # trace back to the start state
+            curr_transition = transition
+            while curr_transition.prev_transition:
+                curr_transition = curr_transition.prev_transition
+            start_transitions.add(curr_transition)
+
+        # accumulate all rewards
+        returns = []
+        for start_transition in start_transitions:
+            ret = 0.0
+            curr_transition = start_transition
+            while True:
+                ret += curr_transition.reward
+                if curr_transition.next_transition is None:
+                    break
+                curr_transition = curr_transition.next_transition
+            returns.append(ret)
+
+        self._return_max = float(np.max(returns))
+        self._return_min = float(np.min(returns))
+
+    def transform(self, reward: torch.Tensor) -> torch.Tensor:
+        assert self._return_max is not None and self._return_min is not None
+        return self._multiplier * reward / (self._return_max - self._return_min)
+
+    def reverse_transform(self, reward: torch.Tensor) -> torch.Tensor:
+        assert self._return_max is not None and self._return_min is not None
+        return reward * (self._return_max + self._return_min) / self._multiplier
+
+    def transform_numpy(self, reward: np.ndarray) -> np.ndarray:
+        assert self._return_max is not None and self._return_min is not None
+        return self._multiplier * reward / (self._return_max - self._return_min)
+
+    def get_params(self, deep: bool = False) -> Dict[str, Any]:
+        return {
+            "return_max": self._return_max,
+            "return_min": self._return_min,
+            "multiplier": self._multiplier,
+        }
+
+
 REWARD_SCALER_LIST: Dict[str, Type[RewardScaler]] = {}
 
 
@@ -385,13 +498,13 @@ def register_reward_scaler(cls: Type[RewardScaler]) -> None:
 
     """
     is_registered = cls.TYPE in REWARD_SCALER_LIST
-    assert not is_registered, "%s seems to be already registered" % cls.TYPE
+    assert not is_registered, f"{cls.TYPE} seems to be already registered"
     REWARD_SCALER_LIST[cls.TYPE] = cls
 
 
 def create_reward_scaler(name: str, **kwargs: Any) -> RewardScaler:
     assert name in REWARD_SCALER_LIST, f"{name} seems not to be registered."
-    reward_scaler = REWARD_SCALER_LIST[name](**kwargs)  # type: ignore
+    reward_scaler = REWARD_SCALER_LIST[name](**kwargs)
     assert isinstance(reward_scaler, RewardScaler)
     return reward_scaler
 
@@ -400,3 +513,4 @@ register_reward_scaler(MultiplyRewardScaler)
 register_reward_scaler(ClipRewardScaler)
 register_reward_scaler(MinMaxRewardScaler)
 register_reward_scaler(StandardRewardScaler)
+register_reward_scaler(ReturnBasedRewardScaler)
